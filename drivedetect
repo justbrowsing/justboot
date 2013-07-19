@@ -1,0 +1,95 @@
+#!/bin/bash
+####################
+### drivedetect ####
+version="0.3" ######
+### JustBrowsing ###
+####################
+
+[ "$1" = "--color" ] && enableColor="true"
+
+EXIT_STATUS() { echo "$@"; exit 1; }
+
+CHECK_DEPENDS()
+{
+  depends="awk column bc";
+  for dep in $depends;
+  do
+    exists=$(which $dep 2>/dev/null);
+    if [ -z "$exists" ]; then
+      echo "==> MISSING: $dep not installed";
+      missing="true";
+    fi;
+  done;
+
+  if [ "$missing" = "true" ]; then
+    EXIT_STATUS "ERROR: Missing dependencies";
+  fi;
+}
+
+HUMAN_SIZE()
+{
+  chart=" B|KB|MB|GB|TB|PB|EB|ZB|YB|?B";
+  lvl="1";
+  sectors="512";
+  unset calc_size;
+  if [ "$1" != "0" ];
+  then
+    while [[ "$calc_size" != .* ]] && [ "$lvl" -le "9" ];
+    do
+      calc_size=$(echo "scale=4; (${1} * ${sectors}) / (1024^${lvl})" | bc);
+      lvl=$((lvl+1));
+    done;
+    calc_size=$(echo "scale=2; (${1} * ${sectors}) / (1024^(${lvl}-2))" | bc);
+    lvl=$((lvl-1));
+  else calc_size="???  ";
+  fi
+  calc_unit=$(echo "$chart" | awk -v lvl=$lvl -F "|" '{print $lvl}');
+  echo "${calc_size} ${calc_unit}";
+}
+
+HOT_PLUG()
+{
+  if [ "$1" = "0" ]; then
+    echo "no";
+  elif [ "$1" = "1" ]; then
+    echo "yes";
+  else
+   echo "???";
+  fi;
+}
+
+PRINT_DRIVES()
+{
+  if [ "$enableColor" = "true" ]; then
+    echo -e "\033[0mDevice | Drive Model | Vendor | Capacity | USB\033[0m";
+    echo -e "\033[0m====== | =========== | ====== | ======== | ===\033[0m";
+  else
+    echo "Device | Drive Model | Vendor | Capacity | USB";
+    echo "====== | =========== | ====== | ======== | ==="
+  fi
+
+
+  for device in $(ls /sys/block/*/device/model | awk -F "/" '{print $4}');
+  do
+    rawSize=$(cat /sys/block/$device/size);
+    driveVendor=$(cat /sys/block/$device/device/vendor);
+    driveModel=$(cat /sys/block/$device/device/model);
+    driveSize=$(HUMAN_SIZE $rawSize);
+    rawHotplug=$(cat /sys/block/$device/removable);
+    driveHotplug=$(HOT_PLUG $rawHotplug);
+    if [ "$enableColor" = "true" ]; then
+      if [ "$rawSize" -gt "1468006" -a "$rawHotplug" = "1" ]; then
+        echo -e "\033[7m/dev/$device | $driveModel | $driveVendor | $driveSize | $driveHotplug\033[0m";
+      else
+        echo -e "\033[0m/dev/$device | $driveModel | $driveVendor | $driveSize | $driveHotplug\033[0m";
+      fi;
+    else
+      echo -e "/dev/$device | $driveModel | $driveVendor | $driveSize | $driveHotplug";
+    fi;
+  done;
+}
+
+CHECK_DEPENDS
+PRINT_DRIVES | column -t -s "|";
+
+### END ###
