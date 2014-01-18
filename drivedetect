@@ -1,11 +1,12 @@
 #!/bin/bash
 ####################
 ### drivedetect ####
-version="0.3" ######
+version="0.4" ######
 ### JustBrowsing ###
 ####################
 
-[ "$1" = "--color" ] && enableColor="true"
+[ "$1" = "--color" ] && enableColor="true" && shift
+[ "$1" = "--dialog" ] && outputDialog="true" && shift
 
 EXIT_STATUS() { echo "$@"; exit 1; }
 
@@ -89,7 +90,26 @@ PRINT_DRIVES()
   done;
 }
 
+DIALOG_DRIVES()
+{
+  echo -ne "Device% Drive Model | Vendor | Capacity | USB%";
+  for device in $(ls /sys/block/*/device/model | awk -F "/" '{print $4}');
+  do
+    rawSize=$(cat /sys/block/$device/size);
+    driveVendor=$(cat /sys/block/$device/device/vendor);
+    driveModel=$(cat /sys/block/$device/device/model);
+    driveSize=$(HUMAN_SIZE $rawSize);
+    rawHotplug=$(cat /sys/block/$device/removable);
+    driveHotplug=$(HOT_PLUG $rawHotplug);
+    echo -ne "/dev/$device% $driveModel | $driveVendor | $driveSize | $driveHotplug%";
+  done;
+}
+
 CHECK_DEPENDS
-PRINT_DRIVES | column -t -s "|";
+if [ "$outputDialog" = "true" ]; then
+  DIALOG_DRIVES
+else
+  PRINT_DRIVES | column -t -s "|";
+fi
 
 ### END ###
