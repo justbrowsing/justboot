@@ -1,0 +1,302 @@
+#!/bin/bash
+####################
+### justboot #######
+version="0.1" ######
+### JustBrowsing ###
+####################
+
+mntDir="/mnt"
+tmpDir="${mntDir}/usb/squashfs-root"
+
+# Functions
+EXIT_STATUS() { echo "ERROR: $@"; CLEAN_UP; exit 1; }
+
+PRINT_HEADER() { echo -e "\e[1;34m==> \e[0;32m$@\e[0m"; }
+
+PRINT_USAGE() { echo "USAGE: $0 [live|persist]"; exit 1; }
+
+CLEAN_UP() {
+  echo "==> Cleanup";
+  cd /root >/dev/null
+  rm -rf "$tmpDir"
+  umount "$mntDir/ext4" "$mntDir/iso" "$mntDir/usb" "$mntDir/install" 2>/dev/null;
+  rm -d "$mntDir/ext4" "$mntDir/iso" "$mntDir/usb" "$mntDir/install" 2>/dev/null;
+  exit 0;
+}
+
+START_INSTALL() {
+  [ "$UID" = "0" ] || EXIT_STATUS "Need to be root"
+  startText="Welcome to jb-installer v${version} Pre-Alpha\n\nThis will install JustBrowsing '${installMethod^}' to your computer's harddrive. This installer is highly experimental.\n\nWould you like to proceed?"
+  dialog --backtitle "jb-installer" --yesno "$startText" 10 50
+  status=$?
+  clear
+  if [ "$status" != 0 ]; then
+    EXIT_STATUS "Quiting..."
+  else
+    DL_DEPENDS
+  fi
+}
+
+DL_DEPENDS() {
+  PRINT_HEADER "Downloading dependencies"
+  rm /var/lib/pacman/db.lck 2>/dev/null
+  pacman -Sy bc squashfs-tools --noconfirm --needed
+  wget https://raw.github.com/justbrowsing/justboot/master/drivedetect -O /usr/bin/drivedetect
+  chmod +x /usr/bin/drivedetect
+  SELECT_USB
+}
+
+SELECT_USB() {
+  exec 3>&1
+  IFS="%"
+  deviceText="Select the USB drive containing the JustBrowsing ISO file"
+  device=$(dialog --backtitle "jb-installer" --column-separator "|" --menu "$deviceText" 15 70 50 $(drivedetect --dialog) 2>&1 1>&3)
+  status=$?
+  unset IFS 	  			
+  exec 3>&-
+  clear
+  if [ "$status" != 0 ]; then
+    EXIT_STATUS "Quiting..."
+  else
+    echo "Selected USB drive: $device"
+    [ -b "$device" ] || EXIT_STATUS "$device not a block device"
+    mkdir -p ${mntDir}/usb
+    MOUNT_USB
+  fi
+}
+
+RESELECT_USB() {
+  dialog --backtitle "jb-installer" --msgbox "Unable to mount USB" 10 70
+  SELECT_USB
+}
+
+LIST_USB() { lsblk -iplo NAME,FSTYPE,LABEL,SIZE $device 2>/dev/null | awk '{$1=$1"%"; if($2!=$NF) print $0}' | sed -e 's/ /|/g' -e 's/%|/ /'; }
+
+MOUNT_USB() {
+  partUSB=$(fdisk -l "$device" 2>/dev/null | grep -e "^/dev" -e "^ [[:digit:]]" | wc -l)
+  usb1=$(fdisk -l "$device" 2>/dev/null | grep "^/dev" | awk '{print $1}')
+  if [ "$partUSB" = 0 ]; then
+    dialog --backtitle "jb-installer" --msgbox "USB drive appears to be blank" 10 70
+    SELECT_USB
+  elif [ "$partUSB" = 1 -a -b "$usb1" ]; then
+    umount "${mntDir}/usb" 2>/dev/null
+    mount "$usb1" "${mntDir}/usb" || RESELECT_USB
+  else
+    exec 3>&1
+    deviceText="Select the USB partition containing the JustBrowsing ISO file"
+    usbN=$(dialog --backtitle "jb-installer" --column-separator "|" --menu "$deviceText" 15 70 50 $(LIST_USB) 2>&1 1>&3)
+    status=$?
+    exec 3>&-
+    clear
+    if [ "$status" != 0 ]; then
+      SELECT_USB
+    else
+      echo "Selected USB partition: $usbN"
+      umount "${mntDir}/usb" 2>/dev/null
+      mount "$usbN" "${mntDir}/usb" || RESELECT_USB
+    fi
+  fi
+}
+
+REMOUNT_USB() {
+  dialog --backtitle "jb-installer" --msgbox "Invalid ISO" 10 70
+  MOUNT_USB
+}
+
+SELECT_ISO() {
+  cd ${mntDir}/usb
+  isoFind=$(find -name "justbrowsing*.iso" 2>/dev/null | sort | sed -e 's/^\.\///')
+  cd - >/dev/null
+  isoList=$(echo "$isoFind" | nl | sed 's/^     //')
+  if [ -z "$isoFind" ]; then
+    dialog --backtitle "jb-installer" --msgbox "Couldn't find any ISOs" 10 70
+    clear
+    umount ${mntDir}/usb
+    MOUNT_USB
+  else
+    exec 3>&1
+    isoIndex=$(dialog --scrollbar --menu "Select an ISO file" 100 100 100 $isoList 2>&1 1>&3)
+    status=$?
+    exec 3>&-
+    clear
+    if [ "$status" != 0 ]; then
+      MOUNT_USB
+    else
+      isoFile=$(echo "$isoFind" | awk -v line=$isoIndex NR==line)
+      echo "Selected ISO: $isoFile"
+      checkISO=$(file "${mntDir}/usb/${isoFile}" | awk -F ":" '{print $2}' | grep -o -e "ISO 9660" -e "x86 boot sector" -e "DOS/MBR boot sector");
+      [ "$checkISO" = "x86 boot sector" -o "$checkISO" = "DOS/MBR boot sector" ] && echo "==> Hybrid-ized ISO detected"
+      [ ! -z "$checkISO" ] || REMOUNT_USB
+    fi
+  fi
+}
+
+MOUNT_ISO() {
+  mkdir -p ${mntDir}/iso
+  umount "${mntDir}/iso" 2>/dev/null
+  mount -r "${mntDir}/usb/${isoFile}" "${mntDir}/iso" || RESELECT_ISO
+}
+
+RESELECT_ISO() {
+  dialog --backtitle "jb-installer" --msgbox "Unable to mount ISO" 10 70
+  SELECT_ISO
+}
+
+SELECT_HDD() {
+  exec 3>&1
+  IFS="%"
+  deviceText="Select the hard drive you want to install JustBrowsing to"
+  drive=$(dialog --backtitle "jb-installer" --column-separator "|" --menu "$deviceText" 15 70 50 $(drivedetect --dialog) 2>&1 1>&3)
+  status=$?
+  unset IFS 	  			
+  exec 3>&-
+  clear
+  if [ "$status" != 0 ]; then
+    SELECT_ISO
+  else
+    echo "Selected HDD: $drive"
+    [ -b "$drive" ] || EXIT_STATUS "$drive not a block device"
+    MOUNT_HDD
+  fi
+}
+
+RESELECT_HDD() {
+  dialog --backtitle "jb-installer" --msgbox "Unable to create partition on $drive" 10 70
+  SELECT_HDD
+}
+
+MOUNT_HDD() {
+  hddList=$(fdisk -l "$drive" 2>/dev/null)
+  partHDD=$(echo "$hddList" | grep -e "^/dev" -e "^ [[:digit:]]" | wc -l)
+  sdN=$(echo "$drive" | awk -F "/" '{print $3}')
+  partN=$((partHDD+1));
+  partition="${drive}${partN}"
+  if [ "$partHDD" = 0 ]; then
+    hddText="Proceed to partitioning $partition on the blank harddrive $drive?\n\n\n"
+    hddMsg=$(echo "$hddList" | sed -e 's/^Disk //' -e 's/: /:_/' -e 's/,/\n/' | grep "^/dev" | awk '{print $1,$NF}' | sed -e 's/:_/: /' -e "1 i $hddText")
+    dialog --backtitle "jb-installer" --yesno "$hddMsg" 50 50
+    status=$?
+    if [ "$status" != 0 ]; then 
+      RESELECT_HDD
+    else
+      PART_HDD
+    fi
+  elif [ "$partHDD" -le 3 ]; then
+    hddText="Proceed to create new partition $partition on harddrive $drive?\n\n\n"
+    hddMsg=$(echo "$hddList" | sed -e 's/^Disk //' -e 's/: /:_/' -e 's/,/\n/' | grep "^/dev" | awk '{print $1,$NF}' | sed -e 's/:_/: /' -e "1 i $hddText")
+    dialog --backtitle "jb-installer" --yesno "$hddMsg" 50 50
+    status=$?
+    if [ "$status" != 0 ]; then
+      RESELECT_HDD
+    else
+      PART_HDD
+    fi
+  else
+    RESELECT_HDD
+  fi
+}
+
+SENDKEY_FDISK() {
+  for cmd in $@; do
+    if [ "$cmd" = "ENTER" ]; then
+      echo -ne "\n"
+    else
+      echo -ne "${cmd}\n"
+    fi
+  done
+}
+
+PART_HDD() {
+  PRINT_HEADER "Partitioning HDD"
+  [ "$partHDD" = 0 ] && SENDKEY_FDISK "o w" | fdisk $drive
+  SENDKEY_FDISK "m n p ${partN} ENTER +${partSize} w" | fdisk $drive
+  [ -b "$partition" ] || EXIT_STATUS "$partition not a block device"
+  mkfs.ext4 -L "jb-${installMethod}" "$partition" || RESELECT_HDD
+  umount "${mntDir}/install" 2>/dev/null
+  mkdir -p ${mntDir}/install
+  mount "$partition" "${mntDir}/install"
+}
+
+COPY_ISO() {
+  PRINT_HEADER "Copying ISO to HDD"
+  cp -v "${mntDir}/usb/${isoFile}" "${mntDir}/install"
+  cd "${mntDir}/install"
+  rm "justbrowsing.iso" 2>/dev/null
+  ln -s "${isoFile}" "justbrowsing.iso"
+  cd - >/dev/null
+  sync; sleep 1; sync
+}
+
+EXTRACT_IMG() {
+  PRINT_HEADER "Extracting filesystem from ISO"
+  unsquashfs -d "$tmpDir" "${mntDir}/iso/arch/any/root-image.fs.sfs" || EXIT_STATUS "unable to unsquash image"
+  mkdir -p ${mntDir}/ext4
+  umount "${mntDir}/ext4" 2>/dev/null
+  mount "${tmpDir}/root-image.fs" "${mntDir}/ext4" || EXIT_STATUS "unable to mount image"
+  tar -C "${mntDir}/ext4" -cpf - . | tar -C "${mntDir}/install" -xf -
+  cp "${mntDir}/iso/arch/boot/i686/vmlinuz" "${mntDir}/install/boot/vmlinuz-linux" || EXIT_STATUS "unable to find kernel"
+  cp "${mntDir}/iso/arch/boot/i686/archiso.img" "${mntDir}/install/boot/initramfs-linux.img" || EXIT_STATUS "unable to find initrd"
+  sync; sleep 1; sync
+}
+
+MODIFY_IMG() {
+  PRINT_HEADER "Preparing persistent install"
+  genfstab -L ${mntDir}/install > ${mntDir}/install/etc/fstab
+  cp ${mntDir}/install/etc/mkinitcpio.conf.install ${mntDir}/install/etc/mkinitcpio.conf
+  arch-chroot ${mntDir}/install mkinitcpio -p linux
+  sync; sleep 1; sync
+}
+
+GRUB_PERSIST() {
+  PRINT_HEADER "Installing GRUB2 bootloader"
+  grub-install --recheck --target=i386-pc --boot-directory=${mntDir}/install/boot "$drive"
+  wget "http://justbrowsing.info/start/grub-persist.cfg" -O "${mntDir}/install/boot/grub/grub.cfg"
+  sed -i -e "s/ sdX=.*/ sdX='${sdN}'/g" -e "s/ N=.*/ N='${partN}'/g" "${mntDir}/install/boot/grub/grub.cfg"
+  sync; sleep 1; sync
+  nano -w ${mntDir}/install/boot/grub/grub.cfg
+  sync; sleep 1; sync
+}
+
+GRUB_LIVE() {
+  PRINT_HEADER "Installing GRUB2 bootloader"
+  grub-install --recheck --target=i386-pc --boot-directory=${mntDir}/install "$drive"
+  wget "http://justbrowsing.info/start/grub-live.cfg" -O "${mntDir}/install/grub/grub.cfg"
+  sed -i -e "s/ sdX=.*/ sdX='${sdN}'/g" -e "s/ N=.*/ N='${partN}'/g" "${mntDir}/install/grub/grub.cfg"
+  sync; sleep 1; sync
+  nano -w ${mntDir}/install/grub/grub.cfg
+  sync; sleep 1; sync
+}
+
+
+# Choose install
+if [ "$1" = "persist" ]; then
+  installMethod="persist"
+elif [ "$1" = "live" ]; then
+  installMethod="live"
+else
+  PRINT_USAGE
+fi
+
+if [ "$installMethod" = "persist" ]; then
+  partSize="2G"
+  START_INSTALL
+  SELECT_ISO
+  MOUNT_ISO
+  SELECT_HDD
+  EXTRACT_IMG
+  MODIFY_IMG
+  GRUB_PERSIST
+  CLEAN_UP
+elif [ "$installMethod" = "live" ]; then
+  partSize="700M"
+  START_INSTALL
+  SELECT_ISO
+  SELECT_HDD
+  COPY_ISO
+  GRUB_LIVE
+  CLEAN_UP
+else
+  echo "Invalid selection"; exit 1
+fi
+
+### END ###
