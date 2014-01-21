@@ -1,7 +1,7 @@
 #!/bin/bash
 ####################
 ### justboot #######
-version="0.1" ######
+version="0.2" ######
 ### JustBrowsing ###
 ####################
 
@@ -16,12 +16,26 @@ PRINT_HEADER() { echo -e "\e[1;34m==> \e[0;32m$@\e[0m"; }
 PRINT_USAGE() { echo "USAGE: $0 [live|persist]"; exit 1; }
 
 CLEAN_UP() {
-  echo "==> Cleanup";
-  cd /root >/dev/null
+  PRINT_HEADER "Clean up"
+  cd /root 2>/dev/null
   rm -rf "$tmpDir"
   umount "$mntDir/ext4" "$mntDir/iso" "$mntDir/usb" "$mntDir/install" 2>/dev/null;
   rm -d "$mntDir/ext4" "$mntDir/iso" "$mntDir/usb" "$mntDir/install" 2>/dev/null;
-  exit 0;
+}
+
+CHOOSE_INSTALL() {
+  chooseText="Run the 'Live Installer' or the 'Persistent Installer' ?\n\n"
+  exec 3>&1
+  chooseInstall=$(dialog --backtitle "jb-installer" --column-separator "|" --menu "$chooseText" 15 70 50 1 "Live" 2 "Persistent" 2>&1 1>&3)
+  status=$?
+  exec 3>&-
+  [ "$status" = 0 ] || EXIT_STATUS "Quiting..."
+  if [ "$chooseInstall" = 1 ]; then
+    installMethod="live"
+  elif [ "$chooseInstall" = 2 ]; then
+    installMethod="persist"
+  fi
+  START_INSTALL
 }
 
 START_INSTALL() {
@@ -269,6 +283,7 @@ GRUB_LIVE() {
 
 
 # Choose install
+[ -z "$1" ] && CHOOSE_INSTALL
 if [ "$1" = "persist" ]; then
   installMethod="persist"
 elif [ "$1" = "live" ]; then
